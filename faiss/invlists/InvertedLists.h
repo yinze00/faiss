@@ -22,8 +22,9 @@ namespace faiss {
 
 struct InvertedListsIterator {
     virtual ~InvertedListsIterator();
-    virtual bool has_next() const = 0;
-    virtual std::pair<idx_t, const uint8_t*> next() = 0;
+    virtual bool is_available() const = 0;
+    virtual void next() = 0;
+    virtual std::pair<idx_t, const uint8_t*> get_id_and_codes() = 0;
 };
 
 /** Table of inverted lists
@@ -251,6 +252,9 @@ struct ArrayInvertedLists : InvertedLists {
             const uint8_t* code) override;
 
     void resize(size_t list_no, size_t new_size) override;
+
+    /// permute the inverted lists, map maps new_id to old_id
+    void permute_invlists(const idx_t* map);
 
     ~ArrayInvertedLists() override;
 };

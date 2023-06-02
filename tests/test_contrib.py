@@ -7,12 +7,15 @@ import faiss
 import unittest
 import numpy as np
 import platform
+import os
+import random
 
 from faiss.contrib import datasets
 from faiss.contrib import inspect_tools
 from faiss.contrib import evaluation
 from faiss.contrib import ivf_tools
 from faiss.contrib import clustering
+from faiss.contrib import big_batch_search
 
 from common_faiss_tests import get_dataset_2
 try:
@@ -127,7 +130,7 @@ class TestExhaustiveSearch(unittest.TestCase):
             xq, ds.database_iterator(bs=100), threshold, ngpu=0,
             metric_type=metric)
 
-        evaluation.test_ref_range_results(
+        evaluation.check_ref_range_results(
             ref_lims, ref_D, ref_I,
             new_lims, new_D, new_I
         )
@@ -158,7 +161,7 @@ class TestExhaustiveSearch(unittest.TestCase):
         _, new_lims, new_D, new_I = range_search_max_results(
             index, matrix_iterator(xq, 100), threshold, max_results=1e10)
 
-        evaluation.test_ref_range_results(
+        evaluation.check_ref_range_results(
             ref_lims, ref_D, ref_I,
             new_lims, new_D, new_I
         )
@@ -172,7 +175,7 @@ class TestExhaustiveSearch(unittest.TestCase):
 
         ref_lims, ref_D, ref_I = index.range_search(xq, new_threshold)
 
-        evaluation.test_ref_range_results(
+        evaluation.check_ref_range_results(
             ref_lims, ref_D, ref_I,
             new_lims, new_D, new_I
         )
@@ -204,6 +207,16 @@ class TestInspect(unittest.TestCase):
         np.testing.assert_array_equal(
             xb, inspect_tools.get_flat_data(index)
         )
+
+    def test_make_LT(self):
+        rs = np.random.RandomState(123)
+        X = rs.rand(13, 20).astype('float32')
+        A = rs.rand(5, 20).astype('float32')
+        b = rs.rand(5).astype('float32')
+        Yref = X @ A.T + b
+        lt = inspect_tools.make_LinearTransform_matrix(A, b)
+        Ynew = lt.apply(X)
+        np.testing.assert_equal(Yref, Ynew)
 
 
 class TestRangeEval(unittest.TestCase):
@@ -432,7 +445,7 @@ class TestRangeSearchMaxResults(unittest.TestCase):
             min_results=Dref.size, clip_to_min=True
         )
 
-        evaluation.test_ref_range_results(
+        evaluation.check_ref_range_results(
             lims_ref, Dref, Iref,
             lims_new, Dnew, Inew
         )
@@ -454,7 +467,7 @@ class TestClustering(unittest.TestCase):
         km_ref.train(xt)
         err = faiss.knn(xt, km_ref.centroids, 1)[0].sum()
 
-        centroids2, _ = clustering.two_level_clustering(xt, 10, 10)
+        centroids2, _ = clustering.two_level_clustering(xt, 10, 100)
         err2 = faiss.knn(xt, centroids2, 1)[0].sum()
 
         self.assertLess(err2, err * 1.1)
@@ -471,7 +484,7 @@ class TestClustering(unittest.TestCase):
         index = faiss.index_factory(ds.d, "PCA16,IVF100,SQ8")
         faiss.extract_index_ivf(index).nprobe = 10
         clustering.train_ivf_index_with_2level(
-            index, ds.get_train(), verbose=True)
+            index, ds.get_train(), verbose=True, rebalance=False)
         index.add(ds.get_database())
         Dnew, Inew = index.search(ds.get_queries(), 1)
 
@@ -495,7 +508,7 @@ class TestBigBatchSearch(unittest.TestCase):
         # faiss.omp_set_num_threads(1)
         for method in ("pairwise_distances", "knn_function", "index"):
             for threaded in 0, 1, 3, 8:
-                Dnew, Inew = ivf_tools.big_batch_search(
+                Dnew, Inew = big_batch_search.big_batch_search(
                     index, ds.get_queries(),
                     k, method=method,
                     threaded=threaded
@@ -514,3 +527,76 @@ class TestBigBatchSearch(unittest.TestCase):
 
     def test_SQ(self):
         self.do_test("IVF64,SQ8")
+
+    def test_checkpoint(self):
+        ds = datasets.SyntheticDataset(32, 2000, 400, 500)
+        k = 10
+        index = faiss.index_factory(ds.d, "IVF64,SQ8")
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+        index.nprobe = 5
+        Dref, Iref = index.search(ds.get_queries(), k)
+
+        r = random.randrange(1 << 60)
+        checkpoint = "/tmp/test_big_batch_checkpoint.%d" % r
+        try:
+            # First big batch search
+            try:
+                Dnew, Inew = big_batch_search.big_batch_search(
+                    index, ds.get_queries(),
+                    k, method="knn_function",
+                    threaded=4,
+                    checkpoint=checkpoint, checkpoint_freq=4,
+                    crash_at=20
+                )
+            except ZeroDivisionError:
+                pass
+            else:
+                self.assertFalse("should have crashed")
+            # Second big batch search
+            Dnew, Inew = big_batch_search.big_batch_search(
+                index, ds.get_queries(),
+                k, method="knn_function",
+                threaded=4,
+                checkpoint=checkpoint, checkpoint_freq=4
+            )
+            self.assertLess((Inew != Iref).sum() / Iref.size, 1e-4)
+            np.testing.assert_almost_equal(Dnew, Dref, decimal=4)
+        finally:
+            if os.path.exists(checkpoint):
+                os.unlink(checkpoint)
+
+
+class TestInvlistSort(unittest.TestCase):
+
+    def test_sort(self):
+        """ make sure that the search results do not change
+        after sorting the inverted lists """
+        ds = datasets.SyntheticDataset(32, 2000, 200, 20)
+        index = faiss.index_factory(ds.d, "IVF50,SQ8")
+        index.train(ds.get_train())
+        index.add(ds.get_database())
+        index.nprobe = 5
+        Dref, Iref = index.search(ds.get_queries(), 5)
+
+        ivf_tools.sort_invlists_by_size(index)
+        list_sizes = ivf_tools.get_invlist_sizes(index.invlists)
+        assert np.all(list_sizes[1:] >= list_sizes[:-1])
+
+        Dnew, Inew = index.search(ds.get_queries(), 5)
+        np.testing.assert_equal(Dnew, Dref)
+        np.testing.assert_equal(Inew, Iref)
+
+    def test_hnsw_permute(self):
+        """ make sure HNSW permutation works (useful when used as coarse quantizer) """
+        ds = datasets.SyntheticDataset(32, 0, 1000, 50)
+        index = faiss.index_factory(ds.d, "HNSW32,Flat")
+        index.add(ds.get_database())
+        Dref, Iref = index.search(ds.get_queries(), 5)
+        rs = np.random.RandomState(1234)
+        perm = rs.permutation(index.ntotal)
+        index.permute_entries(perm)
+        Dnew, Inew = index.search(ds.get_queries(), 5)
+        np.testing.assert_equal(Dnew, Dref)
+        Inew_remap = perm[Inew]
+        np.testing.assert_equal(Inew_remap, Iref)

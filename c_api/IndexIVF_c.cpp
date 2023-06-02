@@ -12,10 +12,50 @@
 #include <faiss/IndexIVF.h>
 #include "Clustering_c.h"
 #include "Index_c.h"
+#include "impl/AuxIndexStructures_c.h"
 #include "macros_impl.h"
 
 using faiss::IndexIVF;
 using faiss::IndexIVFStats;
+using faiss::SearchParametersIVF;
+
+/// SearchParametersIVF definitions
+
+DEFINE_DESTRUCTOR(SearchParametersIVF)
+DEFINE_SEARCH_PARAMETERS_DOWNCAST(SearchParametersIVF)
+
+int faiss_SearchParametersIVF_new(FaissSearchParametersIVF** p_sp) {
+    try {
+        SearchParametersIVF* sp = new SearchParametersIVF;
+        *p_sp = reinterpret_cast<FaissSearchParametersIVF*>(sp);
+    }
+    CATCH_AND_HANDLE
+}
+
+int faiss_SearchParametersIVF_new_with(
+        FaissSearchParametersIVF** p_sp,
+        FaissIDSelector* sel,
+        size_t nprobe,
+        size_t max_codes) {
+    try {
+        SearchParametersIVF* sp = new SearchParametersIVF;
+        sp->sel = reinterpret_cast<faiss::IDSelector*>(sel);
+        sp->nprobe = nprobe;
+        sp->max_codes = max_codes;
+        *p_sp = reinterpret_cast<FaissSearchParametersIVF*>(sp);
+    }
+    CATCH_AND_HANDLE
+}
+
+DEFINE_GETTER_PERMISSIVE(SearchParametersIVF, const FaissIDSelector*, sel)
+
+DEFINE_GETTER(SearchParametersIVF, size_t, nprobe)
+DEFINE_SETTER(SearchParametersIVF, size_t, nprobe)
+
+DEFINE_GETTER(SearchParametersIVF, size_t, max_codes)
+DEFINE_SETTER(SearchParametersIVF, size_t, max_codes)
+
+/// IndexIVF definitions
 
 DEFINE_DESTRUCTOR(IndexIVF)
 DEFINE_INDEX_DOWNCAST(IndexIVF)
@@ -123,6 +163,17 @@ void faiss_IndexIVF_invlists_get_ids(
     size_t list_size =
             reinterpret_cast<const IndexIVF*>(index)->get_list_size(list_no);
     memcpy(invlist, list, list_size * sizeof(idx_t));
+}
+
+int faiss_IndexIVF_train_encoder(
+        FaissIndexIVF* index,
+        idx_t n,
+        const float* x,
+        const idx_t* assign) {
+    try {
+        reinterpret_cast<IndexIVF*>(index)->train_encoder(n, x, assign);
+    }
+    CATCH_AND_HANDLE
 }
 
 void faiss_IndexIVFStats_reset(FaissIndexIVFStats* stats) {

@@ -22,7 +22,7 @@ from faiss.array_conversions import *
 from faiss.extra_wrappers import kmin, kmax, pairwise_distances, rand, randint, \
     lrand, randn, rand_smooth_vectors, eval_intersection, normalize_L2, \
     ResultHeap, knn, Kmeans, checksum, matrix_bucket_sort_inplace, bucket_sort, \
-    merge_knn_results
+    merge_knn_results, MapInt64ToInt64
 
 
 __version__ = "%d.%d.%d" % (FAISS_VERSION_MAJOR,
@@ -189,6 +189,13 @@ add_ref_in_constructor(BufferedIOWriter, 0)
 add_ref_in_constructor(BufferedIOReader, 0)
 
 add_ref_in_constructor(IDSelectorNot, 0)
+add_ref_in_constructor(IDSelectorAnd, slice(2))
+add_ref_in_constructor(IDSelectorOr, slice(2))
+add_ref_in_constructor(IDSelectorXOr, slice(2))
+add_ref_in_constructor(IDSelectorTranslated, slice(2))
+
+add_ref_in_constructor(IDSelectorXOr, slice(2))
+add_ref_in_constructor(IndexIVFIndependentQuantizer, slice(3))
 
 # seems really marginal...
 # remove_ref_from_method(IndexReplicas, 'removeIndex', 0)

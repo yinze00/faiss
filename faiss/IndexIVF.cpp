@@ -160,7 +160,7 @@ IndexIVF::IndexIVF(
         size_t code_size,
         MetricType metric)
         : Index(d, metric),
-          Level1Quantizer(quantizer, nlist),
+          IndexIVFInterface(quantizer, nlist),
           invlists(new ArrayInvertedLists(nlist, code_size)),
           own_invlists(true),
           code_size(code_size) {
@@ -172,13 +172,7 @@ IndexIVF::IndexIVF(
     }
 }
 
-IndexIVF::IndexIVF()
-        : invlists(nullptr),
-          own_invlists(false),
-          code_size(0),
-          nprobe(1),
-          max_codes(0),
-          parallel_mode(0) {}
+IndexIVF::IndexIVF() {}
 
 void IndexIVF::add(idx_t n, const float* x) {
     add_with_ids(n, x, nullptr);
@@ -529,7 +523,7 @@ void IndexIVF::search_preassigned(
                             invlists->get_iterator(key));
 
                     nheap += scanner->iterate_codes(
-                            it.get(), list_size, simi, idxi, k);
+                            it.get(), simi, idxi, k, list_size);
 
                     return list_size;
                 } else {
@@ -767,6 +761,10 @@ void IndexIVF::range_search_preassigned(
     idx_t max_codes = params ? params->max_codes : this->max_codes;
     IDSelector* sel = params ? params->sel : nullptr;
 
+    FAISS_THROW_IF_NOT_MSG(
+            !invlists->use_iterator || (max_codes == 0 && store_pairs == false),
+            "iterable inverted lists don't support max_codes and store_pairs");
+
     size_t nlistv = 0, ndis = 0;
 
     bool interrupt = false;
@@ -803,21 +801,30 @@ void IndexIVF::range_search_preassigned(
                     key,
                     ik,
                     nlist);
-            const size_t list_size = invlists->list_size(key);
 
-            if (list_size == 0)
+            if (invlists->is_empty(key)) {
                 return;
+            }
 
             try {
-                InvertedLists::ScopedCodes scodes(invlists, key);
-                InvertedLists::ScopedIds ids(invlists, key);
-
+                size_t list_size = 0;
                 scanner->set_list(key, coarse_dis[i * nprobe + ik]);
+                if (invlists->use_iterator) {
+                    std::unique_ptr<InvertedListsIterator> it(
+                            invlists->get_iterator(key));
+
+                    scanner->iterate_codes_range(
+                            it.get(), radius, qres, list_size);
+                } else {
+                    InvertedLists::ScopedCodes scodes(invlists, key);
+                    InvertedLists::ScopedIds ids(invlists, key);
+                    list_size = invlists->list_size(key);
+
+                    scanner->scan_codes_range(
+                            list_size, scodes.get(), ids.get(), radius, qres);
+                }
                 nlistv++;
                 ndis += list_size;
-                scanner->scan_codes_range(
-                        list_size, scodes.get(), ids.get(), radius, qres);
-
             } catch (const std::exception& e) {
                 std::lock_guard<std::mutex> lock(exception_mutex);
                 exception_string =
@@ -1054,22 +1061,52 @@ void IndexIVF::update_vectors(int n, const idx_t* new_ids, const float* x) {
 }
 
 void IndexIVF::train(idx_t n, const float* x) {
-    if (verbose)
+    if (verbose) {
         printf("Training level-1 quantizer\n");
+    }
 
     train_q1(n, x, verbose, metric_type);
 
-    if (verbose)
+    if (verbose) {
         printf("Training IVF residual\n");
+    }
 
-    train_residual(n, x);
+    // optional subsampling
+    idx_t max_nt = train_encoder_num_vectors();
+    if (max_nt <= 0) {
+        max_nt = (size_t)1 << 35;
+    }
+
+    TransformedVectors tv(
+            x, fvecs_maybe_subsample(d, (size_t*)&n, max_nt, x, verbose));
+
+    if (by_residual) {
+        std::vector<idx_t> assign(n);
+        quantizer->assign(n, tv.x, assign.data());
+
+        std::vector<float> residuals(n * d);
+        quantizer->compute_residual_n(n, tv.x, residuals.data(), assign.data());
+
+        train_encoder(n, residuals.data(), assign.data());
+    } else {
+        train_encoder(n, tv.x, nullptr);
+    }
+
     is_trained = true;
 }
 
-void IndexIVF::train_residual(idx_t /*n*/, const float* /*x*/) {
-    if (verbose)
-        printf("IndexIVF: no residual training\n");
+idx_t IndexIVF::train_encoder_num_vectors() const {
+    return 0;
+}
+
+void IndexIVF::train_encoder(
+        idx_t /*n*/,
+        const float* /*x*/,
+        const idx_t* assign) {
     // does nothing by default
+    if (verbose) {
+        printf("IndexIVF: no residual training\n");
+    }
 }
 
 bool check_compatible_for_merge_expensive_check = true;
@@ -1202,32 +1239,32 @@ size_t InvertedListScanner::scan_codes(
 
 size_t InvertedListScanner::iterate_codes(
         InvertedListsIterator* it,
-        size_t& n,
         float* simi,
         idx_t* idxi,
-        size_t k) const {
+        size_t k,
+        size_t& list_size) const {
     size_t nup = 0;
-    n = 0;
+    list_size = 0;
 
     if (!keep_max) {
-        while (it->has_next()) {
-            auto id_and_codes = it->next();
+        for (; it->is_available(); it->next()) {
+            auto id_and_codes = it->get_id_and_codes();
             float dis = distance_to_code(id_and_codes.second);
             if (dis < simi[0]) {
                 maxheap_replace_top(k, simi, idxi, dis, id_and_codes.first);
                 nup++;
             }
-            n++;
+            list_size++;
         }
     } else {
-        while (it->has_next()) {
-            auto id_and_codes = it->next();
+        for (; it->is_available(); it->next()) {
+            auto id_and_codes = it->get_id_and_codes();
             float dis = distance_to_code(id_and_codes.second);
             if (dis > simi[0]) {
                 minheap_replace_top(k, simi, idxi, dis, id_and_codes.first);
                 nup++;
             }
-            n++;
+            list_size++;
         }
     }
     return nup;
@@ -1249,6 +1286,25 @@ void InvertedListScanner::scan_codes_range(
             res.add(dis, id);
         }
         codes += code_size;
+    }
+}
+
+void InvertedListScanner::iterate_codes_range(
+        InvertedListsIterator* it,
+        float radius,
+        RangeQueryResult& res,
+        size_t& list_size) const {
+    list_size = 0;
+    for (; it->is_available(); it->next()) {
+        auto id_and_codes = it->get_id_and_codes();
+        float dis = distance_to_code(id_and_codes.second);
+        bool keep = !keep_max
+                ? dis < radius
+                : dis > radius; // TODO templatize to remove this test
+        if (keep) {
+            res.add(dis, id_and_codes.first);
+        }
+        list_size++;
     }
 }
 
