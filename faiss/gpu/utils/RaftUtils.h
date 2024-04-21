@@ -23,21 +23,23 @@
 #pragma once
 
 #include <faiss/MetricType.h>
-#include <raft/core/error.hpp>
+#include <faiss/gpu/GpuResources.h>
+#include <faiss/gpu/utils/Tensor.cuh>
+
 #include <raft/distance/distance_types.hpp>
 
+#pragma GCC visibility push(default)
 namespace faiss {
 namespace gpu {
 
-inline raft::distance::DistanceType faiss_to_raft(
+inline raft::distance::DistanceType metricFaissToRaft(
         MetricType metric,
         bool exactDistance) {
     switch (metric) {
         case MetricType::METRIC_INNER_PRODUCT:
             return raft::distance::DistanceType::InnerProduct;
         case MetricType::METRIC_L2:
-            return exactDistance ? raft::distance::DistanceType::L2Unexpanded
-                                 : raft::distance::DistanceType::L2Expanded;
+            return raft::distance::DistanceType::L2Expanded;
         case MetricType::METRIC_L1:
             return raft::distance::DistanceType::L1;
         case MetricType::METRIC_Linf:
@@ -54,5 +56,20 @@ inline raft::distance::DistanceType faiss_to_raft(
             RAFT_FAIL("Distance type not supported");
     }
 }
+
+/// Identify matrix rows containing non NaN values. validRows[i] is false if row
+/// i contains a NaN value and true otherwise.
+void validRowIndices(
+        GpuResources* res,
+        Tensor<float, 2, true>& vecs,
+        bool* validRows);
+
+/// Filter out matrix rows containing NaN values. The vectors and indices are
+/// updated in-place.
+idx_t inplaceGatherFilteredRows(
+        GpuResources* res,
+        Tensor<float, 2, true>& vecs,
+        Tensor<idx_t, 1, true>& indices);
 } // namespace gpu
 } // namespace faiss
+#pragma GCC visibility pop

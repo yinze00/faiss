@@ -81,6 +81,9 @@ typedef uint64_t size_t;
 #include <faiss/IndexFastScan.h>
 #include <faiss/IndexAdditiveQuantizerFastScan.h>
 #include <faiss/IndexPQFastScan.h>
+#include <faiss/utils/simdlib.h>
+#include <faiss/impl/simd_result_handlers.h>
+
 #include <faiss/IndexIVFFastScan.h>
 #include <faiss/IndexIVFAdditiveQuantizerFastScan.h>
 #include <faiss/IndexIVFPQFastScan.h>
@@ -124,6 +127,7 @@ typedef uint64_t size_t;
 
 #include <faiss/IVFlib.h>
 #include <faiss/utils/utils.h>
+
 #include <faiss/utils/sorting.h>
 #include <faiss/utils/distances.h>
 #include <faiss/utils/extra_distances.h>
@@ -136,6 +140,8 @@ typedef uint64_t size_t;
 #include <faiss/impl/DistanceComputer.h>
 #include <faiss/impl/AdditiveQuantizer.h>
 #include <faiss/impl/ResidualQuantizer.h>
+#include <faiss/impl/residual_quantizer_encode_steps.h>
+
 #include <faiss/impl/LocalSearchQuantizer.h>
 #include <faiss/impl/ProductAdditiveQuantizer.h>
 #include <faiss/impl/CodePacker.h>
@@ -250,6 +256,7 @@ namespace std {
 %template(RepeatVector) std::vector<faiss::Repeat>;
 %template(ClusteringIterationStatsVector) std::vector<faiss::ClusteringIterationStats>;
 %template(ParameterRangeVector) std::vector<faiss::ParameterRange>;
+
 
 #ifndef SWIGWIN
 %template(OnDiskOneListVector) std::vector<faiss::OnDiskOneList>;
@@ -385,6 +392,9 @@ void gpu_sync_all_devices()
 // order matters because includes are not recursive
 
 %include  <faiss/utils/utils.h>
+%template(CombinerRangeKNNfloat) faiss::CombinerRangeKNN<float>;
+%template(CombinerRangeKNNint16) faiss::CombinerRangeKNN<int16_t>;
+
 %include  <faiss/utils/distances.h>
 %include  <faiss/utils/random.h>
 %include  <faiss/utils/sorting.h>
@@ -410,6 +420,7 @@ void gpu_sync_all_devices()
 %include  <faiss/impl/Quantizer.h>
 %include  <faiss/impl/ProductQuantizer.h>
 %include  <faiss/impl/AdditiveQuantizer.h>
+%include  <faiss/impl/residual_quantizer_encode_steps.h>
 %include  <faiss/impl/ResidualQuantizer.h>
 %include  <faiss/impl/LocalSearchQuantizer.h>
 %include  <faiss/impl/ProductAdditiveQuantizer.h>
@@ -449,7 +460,20 @@ void gpu_sync_all_devices()
 %include  <faiss/IndexNNDescent.h>
 
 %include  <faiss/IndexIVFFlat.h>
+
+%warnfilter(509) faiss::nsg::Graph< int >::at(int,int);
+
 %include  <faiss/impl/NSG.h>
+
+%template(NSG_Graph_int) faiss::nsg::Graph<int>;
+
+// not using %shared_ptr to avoid mem leaks
+%extend faiss::NSG {
+    faiss::nsg::Graph<int>* get_final_graph() {
+        return $self->final_graph.get();
+    }
+}
+
 %include  <faiss/IndexNSG.h>
 
 #ifndef SWIGWIN
@@ -469,6 +493,11 @@ void gpu_sync_all_devices()
 %include  <faiss/IndexFastScan.h>
 %include  <faiss/IndexAdditiveQuantizerFastScan.h>
 %include  <faiss/IndexPQFastScan.h>
+
+// NOTE(matthijs) let's not go into wrapping simdlib
+struct faiss::simd16uint16 {};
+
+%include  <faiss/impl/simd_result_handlers.h>
 %include  <faiss/IndexIVFFastScan.h>
 %include  <faiss/IndexIVFAdditiveQuantizerFastScan.h>
 %include  <faiss/IndexIVFIndependentQuantizer.h>
@@ -580,6 +609,7 @@ void gpu_sync_all_devices()
 %newobject read_VectorTransform;
 %newobject read_ProductQuantizer;
 %newobject clone_index;
+%newobject clone_binary_index;
 %newobject clone_Quantizer;
 %newobject clone_VectorTransform;
 
@@ -992,14 +1022,14 @@ PyObject *swig_ptr (PyObject *a)
         return SWIG_NewPointerObj(data, SWIGTYPE_p_bool, 0);
     }
     if(PyArray_TYPE(ao) == NPY_UINT64) {
-#ifdef SWIGWORDSIZE64
+#if (__SIZEOF_LONG__ == 8)
         return SWIG_NewPointerObj(data, SWIGTYPE_p_unsigned_long, 0);
 #else
         return SWIG_NewPointerObj(data, SWIGTYPE_p_unsigned_long_long, 0);
 #endif
     }
     if(PyArray_TYPE(ao) == NPY_INT64) {
-#ifdef SWIGWORDSIZE64
+#if  (__SIZEOF_LONG__ == 8)
         return SWIG_NewPointerObj(data, SWIGTYPE_p_long, 0);
 #else
         return SWIG_NewPointerObj(data, SWIGTYPE_p_long_long, 0);

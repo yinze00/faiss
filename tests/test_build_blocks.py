@@ -256,6 +256,14 @@ class TestMatrixStats(unittest.TestCase):
         print(comments)
         assert 'vectors are normalized' in comments
 
+    def test_hash(self):
+        cc = []
+        for _ in range(2):
+            rs = np.random.RandomState(123)
+            m = rs.rand(40, 20).astype('float32')
+            cc.append(faiss.MatrixStats(m).hash_value)
+        self.assertTrue(cc[0] == cc[1])
+
 
 class TestScalarQuantizer(unittest.TestCase):
 
@@ -541,6 +549,23 @@ class TestNNDescentKNNG(unittest.TestCase):
         recall = 1.0 * recalls / (nb * K)
         print('Metric: {}, knng accuracy: {}'.format(metric_names[metric], recall))
         assert recall > 0.99
+
+    def test_small_nndescent(self):
+        """ building a too small graph used to crash, make sure it raises
+        an exception instead.
+        TODO: build the exact knn graph for small cases
+        """
+        d = 32
+        K = 10
+        index = faiss.IndexNNDescentFlat(d, K, faiss.METRIC_L2)
+        index.nndescent.S = 10
+        index.nndescent.R = 32
+        index.nndescent.L = K + 20
+        index.nndescent.iter = 5
+        index.verbose = True
+
+        xb = np.zeros((78, d), dtype='float32')
+        self.assertRaises(RuntimeError, index.add, xb)
 
 
 class TestResultHeap(unittest.TestCase):

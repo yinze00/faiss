@@ -6,7 +6,6 @@
 """this is a basic test script for simple indices work"""
 
 import os
-import sys
 import numpy as np
 import unittest
 import faiss
@@ -143,6 +142,15 @@ class TestBinaryFlat(unittest.TestCase):
         print('nb tests', nt1, nt2)
         # nb tests is actually low...
         self.assertTrue(nt1 > 19 and nt2 > 19)
+
+    def test_reconstruct(self):
+        index = faiss.IndexBinaryFlat(64)
+        input_vector = np.random.randint(0, 255, size=(10, index.code_size)).astype("uint8")
+        index.add(input_vector)
+
+        reconstructed_vector = index.reconstruct_n(0, 4)
+        assert reconstructed_vector.shape == (4, index.code_size)
+        assert np.all(input_vector[:4] == reconstructed_vector)
 
 
 class TestBinaryIVF(unittest.TestCase):
@@ -374,6 +382,7 @@ class TestReplicasAndShards(unittest.TestCase):
             sub_idx = faiss.IndexBinaryFlat(d)
             sub_idx.add(xb)
             index.addIndex(sub_idx)
+        self.assertEqual(index_ref.code_size, index.code_size)
 
         D, I = index.search(xq, 10)
 
